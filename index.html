@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Scroll ⇄ Audio (Seamless DJ • Minimal Badge)</title>
+    <title>Scroll ⇄ Audio (Seamless DJ • Minimal Badge • Robust Start)</title>
     <style>
       html,
       body {
@@ -26,8 +26,6 @@
         margin: 0;
         border: 0;
       }
-
-      /* Minimal circular badge */
       .badge {
         position: fixed;
         right: 16px;
@@ -49,7 +47,6 @@
       }
       .badge .icon {
         font-size: 16px;
-        display: block;
         line-height: 1;
         opacity: 0.9;
       }
@@ -64,25 +61,10 @@
       .badge.user {
         background: rgba(30, 41, 59, 0.72);
       }
-      /* Accessibility helper (visually hidden) */
-      .sr-only {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0, 0, 1, 1);
-        white-space: nowrap;
-        border: 0;
-      }
     </style>
   </head>
   <body>
-    <!-- Timeline strips (images) -->
     <div id="wrap" class="wrap" aria-label="Timeline images"></div>
-
-    <!-- Native audio (shadowed by granular lane) -->
     <audio
       id="audio"
       src="track.mp3"
@@ -92,16 +74,14 @@
       autoplay
     ></audio>
 
-    <!-- Minimal circular badge -->
     <div
       id="badge"
       class="badge auto"
       aria-live="polite"
       aria-atomic="true"
       role="status"
-      title="Scroll to take control"
+      title="Scroll / tap to take control"
     >
-      <div class="sr-only" id="badgeSr">Auto 1.00x</div>
       <div class="icon" id="badgeIcon">▶</div>
       <div class="rate" id="badgeRate">1.00×</div>
     </div>
@@ -111,23 +91,21 @@
       const STRIP_COUNT = 4,
         STRIP_PREFIX = 'strip',
         STRIP_EXT = 'png'
-      const START_DEBOUNCE_MS = 300,
+      const START_DEBOUNCE_MS = 200,
         IDLE_BACK_MS = 700,
         POST_HANDOFF_MUTE_MS = 600
       const XFADE_MS = 200
 
-      /* Granular */
       const GRAIN_MS = 50,
         HOP_MS = 6,
         LOOKAHEAD_MS = 60
       const ATTACK_MS = 2.5,
-        RELEASE_MS = 2.5
-      const MICRO_JITTER_MS = 0.35
+        RELEASE_MS = 2.5,
+        MICRO_JITTER_MS = 0.35
       const PULL_ALPHA_AUTO = 0.18,
-        PULL_ALPHA_USER = 0.08
-      const RATE_CAP = 2.3
+        PULL_ALPHA_USER = 0.08,
+        RATE_CAP = 2.3
 
-      /* Vinyl feel */
       const DRAG_SENSITIVITY = 1 / 950,
         RETURN_LAMBDA = 0.14,
         FRICTION_DECAY = 0.0035
@@ -190,15 +168,13 @@
           ? 0
           : Math.min(d, Math.max(0, ((y - startY) / (endY - startY)) * d))
 
-      /* ===== Badge (UI) ===== */
+      /* ===== Badge UI ===== */
       const badge = document.getElementById('badge')
       const badgeIcon = document.getElementById('badgeIcon')
       const badgeRate = document.getElementById('badgeRate')
-      const badgeSr = document.getElementById('badgeSr')
       function setBadge(mode, rate) {
         const rTxt = `${Math.abs(rate).toFixed(2)}×`
         badgeRate.textContent = rTxt
-        badgeSr.textContent = `${mode === 'USER' ? 'Manual' : 'Auto'} ${rTxt}`
         if (mode === 'USER') {
           badge.classList.remove('auto')
           badge.classList.add('user')
@@ -217,12 +193,23 @@
       audio.addEventListener('loadedmetadata', () => {
         audioReady = true
         duration = audio.duration || 0
-        audio.play().catch(() => {
-          /* start on gesture */
-        })
+        audio
+          .play()
+          .then(() => {
+            console.log('[auto] native playing')
+            mode = 'AUTO'
+          })
+          .catch(() => {
+            console.log(
+              '[auto] native blocked; will use AUTO_SIM until gesture'
+            )
+          })
+      })
+      audio.addEventListener('playing', () => {
+        /* hint hidden */
       })
 
-      /* ===== WebAudio (granular lane always running) ===== */
+      /* ===== WebAudio ===== */
       const ACtx = window.AudioContext || window.webkitAudioContext
       const ctx = new ACtx({ latencyHint: 'interactive' })
       const main = ctx.createGain()
@@ -236,14 +223,13 @@
       const media = ctx.createMediaElementSource(audio)
       media.connect(nativeGain)
 
-      /* DJ processing: lowpass to tame squeak */
+      /* DJ processing */
       const djFilter = ctx.createBiquadFilter()
       djFilter.type = 'lowpass'
       djFilter.frequency.value = 15000
       djFilter.Q.value = 0.707
       djFilter.connect(djGain)
 
-      /* Raised-cosine (Hann) */
       function hannCurve(n) {
         const a = new Float32Array(n)
         for (let i = 0; i < n; i++)
@@ -278,14 +264,19 @@
           waBufRev = makeReversedBuffer(waBuf)
           waReady = true
           startScheduler()
+          console.log('[auto] decoded track.mp3')
         } catch (e) {
-          /* silent */
+          console.warn('[auto] decode failed', e)
         }
       })()
 
-      async function ensureUnlocked() {
+      /* Robust unlock shim */
+      async function robustUnlock() {
         try {
-          await ctx.resume()
+          if (ctx.state !== 'running') {
+            await ctx.resume()
+            console.log('[unlock] AudioContext resumed')
+          }
         } catch {}
         try {
           await audio.play()
@@ -311,7 +302,6 @@
           const now = ctx.currentTime,
             look = LOOKAHEAD_MS / 1000
           while (lastSch < now + look) {
-            // Pull engine depending on mode
             if (mode === 'AUTO' && audioReady) {
               const tNat = audio.currentTime || 0
               enginePos += (tNat - enginePos) * PULL_ALPHA_AUTO
@@ -328,7 +318,6 @@
             const dir = platterRate >= 0 ? +1 : -1,
               buf = dir >= 0 ? waBuf : waBufRev
 
-            // wow & flutter
             const wow = WOW_DEPTH * Math.sin(2 * Math.PI * WOW_HZ * now)
             const fl = FLUT_DEPTH * Math.sin(2 * Math.PI * FLUT_HZ * now)
             const base = Math.min(
@@ -340,7 +329,6 @@
               Math.max(0.35, base * (1 + wow + fl))
             )
 
-            // anti-squeak filter
             let cut = 14000 / (1 + Math.max(0, eff - 1) * 3.0)
             if (platterRate < 0) cut *= 0.85
             djFilter.frequency.setTargetAtTime(
@@ -349,13 +337,11 @@
               0.02
             )
 
-            // offsets (5ms safety tail)
             const tail = 0.005
             let off =
               dir >= 0 ? enginePos : waBuf.duration - enginePos - grainSec
             off = Math.min(Math.max(0, off), buf.duration - grainSec - tail)
 
-            // grain
             const src = ctx.createBufferSource()
             src.buffer = buf
             src.playbackRate.value = eff
@@ -395,9 +381,10 @@
         if (mode === 'USER') return
         mode = 'USER'
         audio.muted = true
-        rampGain(djGain, 1, XFADE_MS) // fade DJ in
-        rampGain(nativeGain, 0, XFADE_MS) // fade native out
+        rampGain(djGain, 1, XFADE_MS) // DJ up
+        rampGain(nativeGain, 0, XFADE_MS) // native down
         setBadge(mode, platterRate)
+        console.log('[mode] USER')
       }
       function exitUser() {
         if (mode !== 'USER') return
@@ -405,45 +392,40 @@
           audio.muted = true
           audio.play().catch(() => {})
           const delta = enginePos - (audio.currentTime || 0)
-          if (Math.abs(delta) > 0.08) audio.currentTime = enginePos // gentle nudge
+          if (Math.abs(delta) > 0.08) audio.currentTime = enginePos
         }
         mode = 'AUTO'
         rampGain(nativeGain, 1, XFADE_MS)
         rampGain(djGain, 0, XFADE_MS)
         ignoreInputUntil = performance.now() + POST_HANDOFF_MUTE_MS
         setBadge(mode, 1.0)
+        console.log('[mode] AUTO')
       }
 
-      /* ===== Inputs ===== */
+      /* ===== Inputs: also force-unlock on any activity ===== */
       function markUserControl(e) {
         const now = performance.now()
         if (now < ignoreInputUntil) return
         if (now - bootTs < START_DEBOUNCE_MS) return
         if (e && e.isTrusted === false) return
-        ensureUnlocked()
+        robustUnlock() // <-- important
         lastUserTs = now
         if (mode !== 'USER') enterUser()
       }
-      addEventListener('wheel', e => markUserControl(e), { passive: true })
-      addEventListener('touchstart', e => markUserControl(e), { passive: true })
-      addEventListener('touchmove', e => markUserControl(e), { passive: true })
-      addEventListener('pointerdown', e => markUserControl(e), {
-        passive: true
-      })
-      addEventListener(
+      ;[
+        'wheel',
+        'touchstart',
+        'touchmove',
+        'pointerdown',
         'keydown',
-        e => {
-          const k = [
-            'ArrowUp',
-            'ArrowDown',
-            'PageUp',
-            'PageDown',
-            'Home',
-            'End',
-            ' ',
-            'Spacebar'
-          ]
-          if (k.includes(e.key)) markUserControl(e)
+        'mousedown'
+      ].forEach(evt => {
+        addEventListener(evt, markUserControl, { passive: true })
+      })
+      document.addEventListener(
+        'visibilitychange',
+        () => {
+          if (!document.hidden) robustUnlock()
         },
         { passive: true }
       )
@@ -469,30 +451,31 @@
             if (Math.abs(scrollY - y) > 0.5) scrollTo(0, y)
             setBadge(mode, 1.0)
           } else if (waReady) {
+            // Native blocked or paused → audible granular auto
             mode = 'AUTO_SIM'
             rampGain(djGain, 1, 140)
             rampGain(nativeGain, 0, 140)
             setBadge('AUTO', 1.0)
+            console.log('[auto] enter AUTO_SIM')
           }
         } else if (mode === 'AUTO_SIM') {
           const y = yFromTime(enginePos, waBuf ? waBuf.duration : duration || 0)
           if (Math.abs(scrollY - y) > 0.5) scrollTo(0, y)
           setBadge('AUTO', 1.0)
+          // Periodically try to promote back to native
           if (audioReady && ++promoteTick % 30 === 0) {
-            audio
-              .play()
-              .then(() => {
-                audio.muted = false
+            robustUnlock().then(() => {
+              if (!audio.paused) {
                 rampGain(nativeGain, 1, XFADE_MS)
                 rampGain(djGain, 0, XFADE_MS)
                 setTimeout(() => {
                   mode = 'AUTO'
+                  console.log('[auto] promote to native AUTO')
                 }, XFADE_MS + 40)
-              })
-              .catch(() => {})
+              }
+            })
           }
         } else if (mode === 'USER') {
-          // Platter physics from scroll
           const pxps = (dy * 1000) / dt
           const torque = pxps * DRAG_SENSITIVITY
           rateTarget += torque
@@ -501,10 +484,8 @@
             rateTarget += (1.0 - rateTarget) * FRICTION_DECAY
           platterRate += (rateTarget - platterRate) * 0.26
           platterRate = Math.min(Math.max(platterRate, -RATE_CAP), RATE_CAP)
-
           setBadge(mode, platterRate)
 
-          // Calm detector → smooth handback
           const calm =
             now - lastUserTs >= IDLE_BACK_MS &&
             Math.abs(pxps) < 1.2 &&
@@ -516,7 +497,7 @@
       }
       requestAnimationFrame(loop)
 
-      /* Initial mapping */
+      // initial layout
       recomputeMapping(false)
     </script>
   </body>
