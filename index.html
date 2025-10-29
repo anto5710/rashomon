@@ -3,14 +3,12 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <title>
-            Scroll ⇄ Audio (Ping-Pong Auto • Ultra-Smooth DJ • Minimal Badge)
-        </title>
+        <title>Scroll = Play (Manual Only • Ultra-Smooth)</title>
         <style>
             html,
             body {
                 margin: 0;
-                background: #0f172a;
+                background: #0b1020;
                 color: #e5e7eb;
                 font-family: system-ui, -apple-system, Segoe UI, Roboto,
                     Helvetica, Arial, sans-serif;
@@ -20,6 +18,8 @@
                 margin: 0 auto;
                 font-size: 0;
                 line-height: 0;
+                will-change: filter; /* for smooth blur */
+                transition: filter 80ms linear; /* tiny smoothing on visual blur */
             }
             .wrap img {
                 display: block;
@@ -28,115 +28,79 @@
                 margin: 0;
                 border: 0;
             }
-            .badge {
+
+            /* minimal hint: blinking down arrow, fades on first interaction */
+            .hint {
                 position: fixed;
-                right: 16px;
-                bottom: 16px;
-                z-index: 20;
-                width: 58px;
-                height: 58px;
-                border-radius: 9999px;
-                display: grid;
-                place-items: center;
-                font-variant-numeric: tabular-nums;
-                background: rgba(15, 23, 42, 0.68);
-                color: #e5e7eb;
-                border: 1px solid rgba(148, 163, 184, 0.25);
-                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+                left: 50%;
+                bottom: 24px;
+                transform: translateX(-50%);
+                z-index: 10;
+                font-size: 20px;
+                opacity: 0.9;
                 user-select: none;
-                -webkit-user-select: none;
-                touch-action: manipulation;
+                pointer-events: none;
+                animation: blink 1.1s ease-in-out infinite;
             }
-            .badge .icon {
-                font-size: 16px;
-                line-height: 1;
-                opacity: 0.9;
+            @keyframes blink {
+                0%,
+                100% {
+                    opacity: 0.15;
+                }
+                50% {
+                    opacity: 0.95;
+                }
             }
-            .badge .rate {
-                font-size: 12px;
-                line-height: 1;
-                opacity: 0.9;
-            }
-            .badge.auto {
-                background: rgba(2, 6, 23, 0.65);
-            }
-            .badge.user {
-                background: rgba(30, 41, 59, 0.72);
+            .hint.hide {
+                animation: none;
+                opacity: 0;
+                transition: opacity 0.35s ease;
             }
         </style>
     </head>
     <body>
-        <!-- Timeline strips -->
         <div id="wrap" class="wrap" aria-label="Timeline images"></div>
-
-        <!-- Native audio (never muted) -->
-        <audio
-            id="audio"
-            src="track.mp3"
-            preload="auto"
-            playsinline
-            autoplay
-        ></audio>
-
-        <!-- Minimal circular badge -->
-        <div
-            id="badge"
-            class="badge auto"
-            aria-live="polite"
-            aria-atomic="true"
-            role="status"
-            title="Scroll / tap to take control"
-        >
-            <div class="icon" id="badgeIcon">▶</div>
-            <div class="rate" id="badgeRate">1.00×</div>
-        </div>
+        <div id="hint" class="hint" aria-hidden="true">⬇︎</div>
 
         <script>
-            /* ===== CONFIG ===== */
-            const STRIP_COUNT = 1,
+            /* ========= CONFIG ========= */
+            const STRIP_COUNT = 125,
                 STRIP_PREFIX = "pngs/strip",
-                STRIP_EXT = "png";
-            const START_DEBOUNCE_MS = 300,
-                IDLE_BACK_MS = 700,
-                POST_HANDOFF_MUTE_MS = 600;
-            const XFADE_MS = 220;
+                STRIP_EXT = "png"; // strip0.png..stripN.png
+            const XFADE_MS = 220; // bus fade
 
-            /* Granular (ultra-smooth, dual-poly) */
-            const GRAIN_MS = 100,
-                HOP_MS = 4,
-                LOOKAHEAD_MS = 80,
+            /* Granular (current user values) */
+            const GRAIN_MS = 50,
+                HOP_MS = 5,
+                LOOKAHEAD_MS = 85,
                 POLY = 2;
             const MICRO_JITTER_MS = 0.25;
-            const PULL_ALPHA_AUTO = 0.22,
-                PULL_ALPHA_USER = 0.11;
             const RATE_CAP = 2.0;
 
-            /* Vinyl feel */
+            /* Control feel */
             const DRAG_SENSITIVITY = 1 / 980,
                 RETURN_LAMBDA = 0.12,
-                FRICTION_DECAY = 0.0035;
+                FRICTION_DECAY = 0.0038;
+
+            /* Tone / anti-squeak */
             const WOW_HZ = 0.6,
                 WOW_DEPTH = 0.0023,
                 FLUT_HZ = 5.5,
                 FLUT_DEPTH = 0.0004;
+            // softened highs overall (per your request to minimize the high-pitch on stop)
+            const LP_MIN = 1800,
+                LP_MAX = 12000;
 
-            /* Hybrid (manual near 1×) */
-            const HYBRID_ENTER_MIN = 0.8,
-                HYBRID_ENTER_MAX = 1.35;
-            const HYBRID_EXIT_MIN = 0.75,
-                HYBRID_EXIT_MAX = 1.4;
-            const HYBRID_VEL_PXPS = 2.0,
-                HYBRID_RAMP_MS = 180,
-                HYBRID_STICK_MS = 220;
+            /* Idle behavior */
+            const IDLE_HOLD_MS = 650,
+                RATE_EPS = 0.02;
 
-            if ("scrollRestoration" in history)
-                history.scrollRestoration = "manual";
-
-            /* ===== STRIPS / SCROLL MAPPING ===== */
+            /* ========= STRIPS / SCROLL MAPPING ========= */
             const wrap = document.getElementById("wrap"),
                 strips = [];
-            for (let i = 0; i <= STRIP_COUNT; i++) {
+            for (let j = 0; j <= STRIP_COUNT; j++) {
                 const im = new Image();
+                const i = Math.floor(j+2*Math.random())%5;
                 im.alt = `strip ${i}`;
                 im.decoding = "sync";
                 im.loading = "eager";
@@ -173,6 +137,9 @@
             addEventListener(
                 "load",
                 () => {
+                    if ("scrollRestoration" in history)
+                        history.scrollRestoration = "manual";
+                    scrollTo(0, 0);
                     recomputeMapping(false);
                     setTimeout(() => recomputeMapping(true), 220);
                 },
@@ -191,51 +158,16 @@
                           Math.max(0, ((y - startY) / (endY - startY)) * d)
                       );
 
-            /* ===== Badge UI ===== */
-            const badge = document.getElementById("badge");
-            const badgeIcon = document.getElementById("badgeIcon");
-            const badgeRate = document.getElementById("badgeRate");
-            function setBadge(mode, rate) {
-                const rTxt = `${Math.abs(rate).toFixed(2)}×`;
-                badgeRate.textContent = rTxt;
-                if (mode === "USER" || mode === "USER_HYBRID") {
-                    badge.classList.remove("auto");
-                    badge.classList.add("user");
-                    badgeIcon.textContent = "☛";
-                } else {
-                    badge.classList.remove("user");
-                    badge.classList.add("auto");
-                    badgeIcon.textContent = "▶";
-                }
-            }
-
-            /* ===== Native <audio> ===== */
-            const audio = document.getElementById("audio");
-            let audioReady = false,
-                duration = 0;
-            audio.volume = 1.0;
-            audio.playbackRate = 1.0;
-            audio.addEventListener("loadedmetadata", () => {
-                audioReady = true;
-                duration = audio.duration || 0;
-                audio.play().catch(() => {});
-            });
-
-            /* ===== WebAudio graph ===== */
+            /* ========= WebAudio (manual DJ only) ========= */
             const ACtx = window.AudioContext || window.webkitAudioContext;
             const ctx = new ACtx({ latencyHint: "interactive" });
             const main = ctx.createGain();
             main.connect(ctx.destination);
-            const nativeGain = ctx.createGain(),
-                djGain = ctx.createGain();
-            nativeGain.gain.value = 1;
+            const djGain = ctx.createGain();
             djGain.gain.value = 0;
-            nativeGain.connect(main);
             djGain.connect(main);
-            const media = ctx.createMediaElementSource(audio);
-            media.connect(nativeGain);
 
-            /* DJ lane tone & dynamics */
+            // Tone chain
             const djLowShelf = ctx.createBiquadFilter();
             djLowShelf.type = "lowshelf";
             djLowShelf.frequency.value = 160;
@@ -246,8 +178,8 @@
             djHighShelf.gain.value = -1.2;
             const djLP = ctx.createBiquadFilter();
             djLP.type = "lowpass";
-            djLP.frequency.value = 15000;
-            djLP.Q.value = 0.707;
+            djLP.frequency.value = 12000;
+            djLP.Q.value = 0.6;
             const djComp = ctx.createDynamicsCompressor();
             djComp.threshold.value = -20;
             djComp.knee.value = 10;
@@ -255,7 +187,7 @@
             djComp.attack.value = 0.004;
             djComp.release.value = 0.12;
             const djMakeup = ctx.createGain();
-            djMakeup.gain.value = 1.22;
+            djMakeup.gain.value = 1.26;
 
             djLowShelf.connect(djHighShelf);
             djHighShelf.connect(djLP);
@@ -263,7 +195,7 @@
             djComp.connect(djMakeup);
             djMakeup.connect(djGain);
 
-            /* Hann window */
+            /* Raised-cosine window */
             function hannCurve(n) {
                 const a = new Float32Array(n);
                 for (let i = 0; i < n; i++)
@@ -276,11 +208,12 @@
             const ENV_SAMPLES = 128,
                 HANN_ENV = hannCurve(ENV_SAMPLES);
 
-            /* Decode buffers */
-            let waBuf = null,
-                waBufRev = null,
+            /* Decode audio buffer */
+            let buffer = null,
+                bufferRev = null,
+                duration = 0,
                 waReady = false;
-            function makeReversedBuffer(b) {
+            function makeReversed(b) {
                 const r = ctx.createBuffer(
                     b.numberOfChannels,
                     b.length,
@@ -299,27 +232,36 @@
                     const ab = await (
                         await fetch("track.mp3", { cache: "no-store" })
                     ).arrayBuffer();
-                    waBuf = await ctx.decodeAudioData(ab);
-                    waBufRev = makeReversedBuffer(waBuf);
+                    buffer = await ctx.decodeAudioData(ab);
+                    bufferRev = makeReversed(buffer);
+                    duration = buffer.duration || 0;
                     waReady = true;
                     startScheduler();
                 } catch (e) {
-                    console.warn("decode failed", e);
+                    console.error("decode failed", e);
                 }
             })();
 
-            /* Helpers */
-            const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
-
-            /* ===== Scheduler (dual-poly grains) ===== */
+            /* ========= Engine / Scheduler ========= */
             const grainSec = GRAIN_MS / 1000,
                 hopSec = HOP_MS / 1000,
                 jitterMax = MICRO_JITTER_MS / 1000;
             let scheduler = null,
                 lastSch = 0;
             let enginePos = 0,
-                platterRate = 1.0,
-                rateTarget = 1.0;
+                platterRate = 0.0,
+                rateTarget = 0.0;
+            let lastUserTs = 0,
+                hinted = true;
+
+            const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+            function ramp(node, to, ms) {
+                const n = ctx.currentTime,
+                    t = Math.max(0.001, ms / 1000);
+                node.gain.cancelScheduledValues(n);
+                node.gain.setValueAtTime(node.gain.value, n);
+                node.gain.linearRampToValueAtTime(to, n + t);
+            }
 
             function scheduleGrain(buf, startClock, offset, rate) {
                 const src = ctx.createBufferSource();
@@ -337,32 +279,37 @@
                 if (scheduler || !waReady) return;
                 lastSch = ctx.currentTime;
                 scheduler = setInterval(() => {
-                    if (!waReady) return;
+                    if (!waReady || !mappingReady) return;
                     const now = ctx.currentTime,
                         look = LOOKAHEAD_MS / 1000;
                     while (lastSch < now + look) {
-                        // Follow targets
-                        if (mode === "AUTO" && audioReady) {
-                            const tNat = audio.currentTime || 0;
-                            enginePos += (tNat - enginePos) * PULL_ALPHA_AUTO;
-                            platterRate += (1.0 - platterRate) * 0.26;
-                            rateTarget += (1.0 - rateTarget) * 0.26;
-                        } else if (mode === "AUTO_REV") {
-                            // drive reverse at ~1x
-                            platterRate += (-1 - platterRate) * 0.35;
-                            rateTarget += (-1 - rateTarget) * 0.35;
-                        } else if (mode === "USER" || mode === "USER_HYBRID") {
-                            const tMap = timeFromY(scrollY, waBuf.duration);
-                            enginePos += (tMap - enginePos) * PULL_ALPHA_USER;
-                        } else if (mode === "AUTO_SIM") {
-                            platterRate += (1.0 - platterRate) * 0.24;
-                            rateTarget += (1.0 - rateTarget) * 0.24;
+                        // activity check
+                        const active =
+                            performance.now() - lastUserTs < IDLE_HOLD_MS ||
+                            Math.abs(platterRate) > RATE_EPS;
+
+                        if (!active) {
+                            // gentle brake (reduce highs first, then fade)
+                            djLP.frequency.setTargetAtTime(
+                                2200,
+                                ctx.currentTime,
+                                0.03
+                            );
+                            djHighShelf.gain.setTargetAtTime(
+                                -6.0,
+                                ctx.currentTime,
+                                0.03
+                            );
+                            ramp(djGain, 0, XFADE_MS);
+                            lastSch += hopSec;
+                            continue;
                         }
 
+                        // direction & buffer
                         const dir = platterRate >= 0 ? +1 : -1;
-                        const buf = dir >= 0 ? waBuf : waBufRev;
+                        const buf = dir >= 0 ? buffer : bufferRev;
 
-                        // Wow/flutter and effective rate
+                        // wow / flutter & effective rate
                         const tAudio = lastSch;
                         const wow =
                             WOW_DEPTH * Math.sin(2 * Math.PI * WOW_HZ * tAudio);
@@ -380,24 +327,55 @@
                             RATE_CAP
                         );
 
-                        // LPF darker at high/negative
+                        // === anti-harsh LP + shelf near stop ===
+                        const timeSinceUser = performance.now() - lastUserTs;
+                        const nearStop =
+                            Math.abs(platterRate) < 0.08 && timeSinceUser > 40;
+                        const coastStop =
+                            Math.abs(platterRate) < 0.03 && timeSinceUser > 160;
+                        const stopAmt = coastStop
+                            ? 1
+                            : nearStop
+                            ? 0.35 +
+                              (0.65 * (0.08 - Math.abs(platterRate))) / 0.08
+                            : 0; // 0..1
+
+                        // base cutoff darker when fast / reverse
                         let cut = 14500 / (1 + Math.max(0, eff - 1) * 3.4);
                         if (platterRate < 0) cut *= 0.85;
+
+                        // pull highs down smoothly as we stop
+                        const targetCut = cut * (1 - 0.75 * stopAmt);
                         djLP.frequency.setTargetAtTime(
-                            clamp(cut, 3000, 16000),
+                            Math.max(LP_MIN, Math.min(LP_MAX, targetCut)),
                             ctx.currentTime,
-                            0.02
+                            0.025
                         );
 
-                        // offsets
+                        // extra high-shelf tame at stop
+                        const shelfDb = -1.2 - 4.0 * stopAmt; // to ~-5.2 dB
+                        djHighShelf.gain.setTargetAtTime(
+                            shelfDb,
+                            ctx.currentTime,
+                            0.03
+                        );
+
+                        // follow scroll mapping
+                        const tMap = timeFromY(scrollY, duration);
+                        enginePos += (tMap - enginePos) * 0.12;
+
+                        // offset with small safety tail
                         const tail = 0.006;
                         let off =
                             dir >= 0
                                 ? enginePos
-                                : waBuf.duration - enginePos - grainSec;
+                                : duration - enginePos - grainSec;
                         off = clamp(off, 0, buf.duration - grainSec - tail);
 
-                        // Grains (dual-poly)
+                        // ensure bus up
+                        ramp(djGain, 1, XFADE_MS);
+
+                        // dual-poly grains
                         const startAt =
                             lastSch +
                             0.002 +
@@ -411,75 +389,31 @@
                         );
                         scheduleGrain(buf, startAt2, off2, eff);
 
-                        // Advance engine time
+                        // advance engine
                         enginePos = clamp(
                             enginePos + (dir >= 0 ? +1 : -1) * hopSec * eff,
                             0,
-                            waBuf.duration
+                            duration
                         );
                         lastSch = startAt + hopSec;
                     }
                 }, Math.max(5, HOP_MS / 2));
             }
 
-            /* ===== Modes & crossfades ===== */
-            let mode = "AUTO";
-            let lastUserTs = performance.now(),
-                ignoreInputUntil = 0;
-            const bootTs = performance.now();
-            function rampGain(node, to, ms) {
-                const n = ctx.currentTime,
-                    t = ms / 1000;
-                node.gain.cancelScheduledValues(n);
-                node.gain.setValueAtTime(node.gain.value, n);
-                node.gain.linearRampToValueAtTime(to, n + t);
-            }
-
-            function enterUser() {
-                if (mode === "USER" || mode === "USER_HYBRID") return;
-                // fade out whichever auto lane and enter DJ
-                if (mode === "AUTO") {
-                    rampGain(nativeGain, 0, XFADE_MS);
-                } else if (mode === "AUTO_REV" || mode === "AUTO_SIM") {
-                    /* already on DJ gain */
-                }
-                mode = "USER";
-                rampGain(djGain, 1, XFADE_MS);
-                setBadge(mode, platterRate);
-            }
-            function exitUser() {
-                if (mode !== "USER" && mode !== "USER_HYBRID") return;
-                // return to forward AUTO at 1× (native)
-                if (audioReady) {
-                    const delta = enginePos - (audio.currentTime || 0);
-                    if (Math.abs(delta) > 0.05) audio.currentTime = enginePos;
-                    audio.playbackRate = 1.0;
-                    audio.play().catch(() => {});
-                }
-                mode = "AUTO";
-                rampGain(nativeGain, 1, XFADE_MS);
-                rampGain(djGain, 0, XFADE_MS);
-                ignoreInputUntil = performance.now() + POST_HANDOFF_MUTE_MS;
-                setBadge(mode, 1.0);
-            }
-
-            /* ===== Input / Unlock ===== */
-            async function robustUnlock() {
+            /* ========= Input (manual only) ========= */
+            async function unlock() {
                 try {
                     if (ctx.state !== "running") await ctx.resume();
                 } catch {}
-                try {
-                    await audio.play();
-                } catch {}
             }
-            function markUserControl(e) {
-                const now = performance.now();
-                if (now < ignoreInputUntil) return;
-                if (now - bootTs < START_DEBOUNCE_MS) return;
+            function onUser(e) {
                 if (e && e.isTrusted === false) return;
-                robustUnlock();
-                lastUserTs = now;
-                if (mode !== "USER" && mode !== "USER_HYBRID") enterUser();
+                unlock();
+                lastUserTs = performance.now();
+                if (hinted) {
+                    hinted = false;
+                    document.getElementById("hint").classList.add("hide");
+                }
             }
             [
                 "wheel",
@@ -489,169 +423,42 @@
                 "keydown",
                 "mousedown",
             ].forEach((evt) => {
-                addEventListener(evt, markUserControl, { passive: true });
+                addEventListener(evt, onUser, { passive: true });
             });
 
-            /* ===== Main loop (Auto ping-pong + Hybrid manual) ===== */
+            /* ========= Frame loop (scroll → platterRate) + visual blur ========= */
             let lastT = performance.now(),
                 lastY = scrollY;
-            let promoteTick = 0,
-                hybridArmTs = 0;
             function loop() {
                 const now = performance.now(),
                     dt = Math.max(1, now - lastT),
                     dy = scrollY - lastY;
                 lastT = now;
                 lastY = scrollY;
-                if (!mappingReady) {
-                    requestAnimationFrame(loop);
-                    return;
-                }
 
-                if (mode === "AUTO") {
-                    if (audioReady && !audio.paused) {
-                        const t = audio.currentTime,
-                            y = yFromTime(t, duration);
-                        if (Math.abs(scrollY - y) > 0.5) scrollTo(0, y);
-                        setBadge(mode, 1.0);
-
-                        // === bottom reached → switch to AUTO_REV (reverse at 1× on DJ lane) ===
-                        if (duration && t >= duration - 0.05) {
-                            // seed engine at end and flip to reverse
-                            enginePos = duration;
-                            // fade lanes
-                            rampGain(nativeGain, 0, XFADE_MS);
-                            rampGain(djGain, 1, XFADE_MS);
-                            // pause native to avoid forward bleed
-                            audio.pause();
-                            mode = "AUTO_REV";
-                        }
-                    } else if (waReady) {
-                        // autoplay blocked → granular forward auto
-                        mode = "AUTO_SIM";
-                        rampGain(djGain, 1, 140);
-                        rampGain(nativeGain, 0, 140);
-                        setBadge("AUTO", 1.0);
-                    }
-                } else if (mode === "AUTO_REV") {
-                    // Keep scroll synced to enginePos moving backwards
-                    const y = yFromTime(
-                        enginePos,
-                        waBuf ? waBuf.duration : duration || 0
-                    );
-                    if (Math.abs(scrollY - y) > 0.5) scrollTo(0, y);
-                    setBadge("AUTO", 1.0);
-
-                    // === top reached → switch back to forward AUTO (native) ===
-                    if (enginePos <= 0.02) {
-                        if (audioReady) {
-                            audio.currentTime = 0;
-                            audio.playbackRate = 1.0;
-                            audio.play().catch(() => {});
-                        }
-                        mode = "AUTO";
-                        rampGain(nativeGain, 1, XFADE_MS);
-                        rampGain(djGain, 0, XFADE_MS);
-                    }
-                } else if (mode === "AUTO_SIM") {
-                    const y = yFromTime(
-                        enginePos,
-                        waBuf ? waBuf.duration : duration || 0
-                    );
-                    if (Math.abs(scrollY - y) > 0.5) scrollTo(0, y);
-                    setBadge("AUTO", 1.0);
-                    if (audioReady && ++promoteTick % 30 === 0) {
-                        robustUnlock().then(() => {
-                            if (!audio.paused) {
-                                rampGain(nativeGain, 1, XFADE_MS);
-                                rampGain(djGain, 0, XFADE_MS);
-                                setTimeout(() => {
-                                    mode = "AUTO";
-                                }, XFADE_MS + 40);
-                            }
-                        });
-                    }
-                } else {
-                    // USER / USER_HYBRID (same hybrid/manual behavior as before)
-                    const pxps = (dy * 1000) / dt;
+                if (mappingReady) {
+                    const pxps = (dy * 1000) / dt; // pixels/sec
                     const torque = pxps * DRAG_SENSITIVITY;
                     rateTarget += torque;
-                    rateTarget += (1.0 - rateTarget) * RETURN_LAMBDA;
                     if (Math.abs(pxps) < 1.5)
-                        rateTarget += (1.0 - rateTarget) * FRICTION_DECAY;
+                        rateTarget += (0 - rateTarget) * RETURN_LAMBDA;
+                    rateTarget += (0 - rateTarget) * FRICTION_DECAY;
+
                     platterRate += (rateTarget - platterRate) * 0.25;
                     platterRate = clamp(platterRate, -RATE_CAP, RATE_CAP);
 
-                    // Hybrid enter with dwell + hysteresis
-                    const inEnter =
-                        platterRate > 0 &&
-                        platterRate >= HYBRID_ENTER_MIN &&
-                        platterRate <= HYBRID_ENTER_MAX &&
-                        Math.abs(pxps) < HYBRID_VEL_PXPS;
-                    const inExit = !(
-                        platterRate > 0 &&
-                        platterRate >= HYBRID_EXIT_MIN &&
-                        platterRate <= HYBRID_EXIT_MAX &&
-                        Math.abs(pxps) < HYBRID_VEL_PXPS
-                    );
-
-                    if (mode === "USER" && inEnter) {
-                        if (hybridArmTs === 0) hybridArmTs = now;
-                        if (
-                            now - hybridArmTs >= HYBRID_STICK_MS &&
-                            audioReady
-                        ) {
-                            audio.playbackRate = clamp(platterRate, 0.8, 1.35);
-                            const cur = audio.currentTime || 0,
-                                tgt = enginePos,
-                                nudge = clamp(tgt - cur, -0.04, 0.04);
-                            audio.currentTime = clamp(
-                                cur + nudge,
-                                0,
-                                duration || tgt
-                            );
-                            mode = "USER_HYBRID";
-                            rampGain(nativeGain, 1, HYBRID_RAMP_MS);
-                            rampGain(djGain, 0.12, HYBRID_RAMP_MS);
-                        }
-                    } else if (mode === "USER_HYBRID") {
-                        if (inExit) {
-                            audio.playbackRate = 1.0;
-                            mode = "USER";
-                            rampGain(djGain, 1, HYBRID_RAMP_MS);
-                            rampGain(nativeGain, 0, HYBRID_RAMP_MS);
-                            hybridArmTs = 0;
-                        } else {
-                            audio.playbackRate = clamp(platterRate, 0.8, 1.35);
-                            const cur = audio.currentTime || 0,
-                                tgt = enginePos,
-                                nudge = clamp(tgt - cur, -0.025, 0.025);
-                            audio.currentTime = clamp(
-                                cur + nudge,
-                                0,
-                                duration || tgt
-                            );
-                        }
-                    } else {
-                        hybridArmTs = 0;
-                    }
-
-                    setBadge(mode, platterRate);
-
-                    // Calm → return to forward AUTO
-                    const calm =
-                        now - lastUserTs >= IDLE_BACK_MS &&
-                        Math.abs(pxps) < 1.2 &&
-                        Math.abs(platterRate - 1.0) < 0.1;
-                    if (calm) exitUser();
+                    // ===== Visual blur based on absolute speed =====
+                    // Threshold so small jiggles don't blur; scale up to ~10px at very fast scrubs
+                    const speed = Math.abs(platterRate);
+                    const blurPx = Math.max(0, (speed - 0.9) * 1.4); // starts blurring above ~0.6×
+                    wrap.style.filter = `blur(${Math.min(10, blurPx).toFixed(
+                        2
+                    )}px)`;
                 }
 
                 requestAnimationFrame(loop);
             }
             requestAnimationFrame(loop);
-
-            // initial layout
-            recomputeMapping(false);
         </script>
     </body>
 </html>
