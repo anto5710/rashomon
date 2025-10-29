@@ -3,7 +3,9 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <title>Scroll ⇄ Audio (Ultra-Smooth DJ v2 • Minimal Badge)</title>
+        <title>
+            Scroll ⇄ Audio (Ping-Pong Auto • Ultra-Smooth DJ • Minimal Badge)
+        </title>
         <style>
             html,
             body {
@@ -91,7 +93,7 @@
 
         <script>
             /* ===== CONFIG ===== */
-            const STRIP_COUNT = 4,
+            const STRIP_COUNT = 1,
                 STRIP_PREFIX = "pngs/strip",
                 STRIP_EXT = "png";
             const START_DEBOUNCE_MS = 300,
@@ -99,11 +101,11 @@
                 POST_HANDOFF_MUTE_MS = 600;
             const XFADE_MS = 220;
 
-            /* Granular (ultra-smooth) */
+            /* Granular (ultra-smooth, dual-poly) */
             const GRAIN_MS = 100,
                 HOP_MS = 4,
-                LOOKAHEAD_MS = 80;
-            const POLY = 2; // spawn 2 grains per hop (staggered)
+                LOOKAHEAD_MS = 80,
+                POLY = 2;
             const MICRO_JITTER_MS = 0.25;
             const PULL_ALPHA_AUTO = 0.22,
                 PULL_ALPHA_USER = 0.11;
@@ -118,14 +120,14 @@
                 FLUT_HZ = 5.5,
                 FLUT_DEPTH = 0.0004;
 
-            /* Hybrid near-1× with hysteresis */
+            /* Hybrid (manual near 1×) */
             const HYBRID_ENTER_MIN = 0.8,
-                HYBRID_ENTER_MAX = 1.35; // enter window
+                HYBRID_ENTER_MAX = 1.35;
             const HYBRID_EXIT_MIN = 0.75,
-                HYBRID_EXIT_MAX = 1.4; // exit window (wider → sticky)
-            const HYBRID_VEL_PXPS = 2.0; // calm velocity
-            const HYBRID_RAMP_MS = 180;
-            const HYBRID_STICK_MS = 220; // dwell to enter
+                HYBRID_EXIT_MAX = 1.4;
+            const HYBRID_VEL_PXPS = 2.0,
+                HYBRID_RAMP_MS = 180,
+                HYBRID_STICK_MS = 220;
 
             if ("scrollRestoration" in history)
                 history.scrollRestoration = "manual";
@@ -345,6 +347,10 @@
                             enginePos += (tNat - enginePos) * PULL_ALPHA_AUTO;
                             platterRate += (1.0 - platterRate) * 0.26;
                             rateTarget += (1.0 - rateTarget) * 0.26;
+                        } else if (mode === "AUTO_REV") {
+                            // drive reverse at ~1x
+                            platterRate += (-1 - platterRate) * 0.35;
+                            rateTarget += (-1 - rateTarget) * 0.35;
                         } else if (mode === "USER" || mode === "USER_HYBRID") {
                             const tMap = timeFromY(scrollY, waBuf.duration);
                             enginePos += (tMap - enginePos) * PULL_ALPHA_USER;
@@ -353,9 +359,10 @@
                             rateTarget += (1.0 - rateTarget) * 0.24;
                         }
 
-                        // Wow/flutter and effective playback rate
                         const dir = platterRate >= 0 ? +1 : -1;
                         const buf = dir >= 0 ? waBuf : waBufRev;
+
+                        // Wow/flutter and effective rate
                         const tAudio = lastSch;
                         const wow =
                             WOW_DEPTH * Math.sin(2 * Math.PI * WOW_HZ * tAudio);
@@ -373,7 +380,7 @@
                             RATE_CAP
                         );
 
-                        // Dynamic LPF — darker at high/negative rates
+                        // LPF darker at high/negative
                         let cut = 14500 / (1 + Math.max(0, eff - 1) * 3.4);
                         if (platterRate < 0) cut *= 0.85;
                         djLP.frequency.setTargetAtTime(
@@ -382,7 +389,7 @@
                             0.02
                         );
 
-                        // Choose offset, safety tail
+                        // offsets
                         const tail = 0.006;
                         let off =
                             dir >= 0
@@ -390,14 +397,12 @@
                                 : waBuf.duration - enginePos - grainSec;
                         off = clamp(off, 0, buf.duration - grainSec - tail);
 
-                        // Primary grain
+                        // Grains (dual-poly)
                         const startAt =
                             lastSch +
                             0.002 +
                             (Math.random() * 2 - 1) * jitterMax;
                         scheduleGrain(buf, startAt, off, eff);
-
-                        // Staggered second grain for thicker overlap (half-hop later)
                         const startAt2 = startAt + hopSec / 2;
                         const off2 = clamp(
                             off + (dir >= 0 ? +1 : -1) * (hopSec / 2) * eff,
@@ -406,13 +411,13 @@
                         );
                         scheduleGrain(buf, startAt2, off2, eff);
 
-                        // Advance the engine clock by one hop (not by poly)
+                        // Advance engine time
                         enginePos = clamp(
                             enginePos + (dir >= 0 ? +1 : -1) * hopSec * eff,
                             0,
                             waBuf.duration
                         );
-                        lastSch = startAt + hopSec; // keep scheduling tightly packed
+                        lastSch = startAt + hopSec;
                     }
                 }, Math.max(5, HOP_MS / 2));
             }
@@ -432,13 +437,19 @@
 
             function enterUser() {
                 if (mode === "USER" || mode === "USER_HYBRID") return;
+                // fade out whichever auto lane and enter DJ
+                if (mode === "AUTO") {
+                    rampGain(nativeGain, 0, XFADE_MS);
+                } else if (mode === "AUTO_REV" || mode === "AUTO_SIM") {
+                    /* already on DJ gain */
+                }
                 mode = "USER";
-                rampGain(djGain, 1, XFADE_MS); // DJ up
-                rampGain(nativeGain, 0, XFADE_MS); // native down
+                rampGain(djGain, 1, XFADE_MS);
                 setBadge(mode, platterRate);
             }
             function exitUser() {
                 if (mode !== "USER" && mode !== "USER_HYBRID") return;
+                // return to forward AUTO at 1× (native)
                 if (audioReady) {
                     const delta = enginePos - (audio.currentTime || 0);
                     if (Math.abs(delta) > 0.05) audio.currentTime = enginePos;
@@ -481,7 +492,7 @@
                 addEventListener(evt, markUserControl, { passive: true });
             });
 
-            /* ===== Main loop (Hybrid with hysteresis) ===== */
+            /* ===== Main loop (Auto ping-pong + Hybrid manual) ===== */
             let lastT = performance.now(),
                 lastY = scrollY;
             let promoteTick = 0,
@@ -499,14 +510,48 @@
 
                 if (mode === "AUTO") {
                     if (audioReady && !audio.paused) {
-                        const y = yFromTime(audio.currentTime, duration);
+                        const t = audio.currentTime,
+                            y = yFromTime(t, duration);
                         if (Math.abs(scrollY - y) > 0.5) scrollTo(0, y);
                         setBadge(mode, 1.0);
+
+                        // === bottom reached → switch to AUTO_REV (reverse at 1× on DJ lane) ===
+                        if (duration && t >= duration - 0.05) {
+                            // seed engine at end and flip to reverse
+                            enginePos = duration;
+                            // fade lanes
+                            rampGain(nativeGain, 0, XFADE_MS);
+                            rampGain(djGain, 1, XFADE_MS);
+                            // pause native to avoid forward bleed
+                            audio.pause();
+                            mode = "AUTO_REV";
+                        }
                     } else if (waReady) {
+                        // autoplay blocked → granular forward auto
                         mode = "AUTO_SIM";
                         rampGain(djGain, 1, 140);
                         rampGain(nativeGain, 0, 140);
                         setBadge("AUTO", 1.0);
+                    }
+                } else if (mode === "AUTO_REV") {
+                    // Keep scroll synced to enginePos moving backwards
+                    const y = yFromTime(
+                        enginePos,
+                        waBuf ? waBuf.duration : duration || 0
+                    );
+                    if (Math.abs(scrollY - y) > 0.5) scrollTo(0, y);
+                    setBadge("AUTO", 1.0);
+
+                    // === top reached → switch back to forward AUTO (native) ===
+                    if (enginePos <= 0.02) {
+                        if (audioReady) {
+                            audio.currentTime = 0;
+                            audio.playbackRate = 1.0;
+                            audio.play().catch(() => {});
+                        }
+                        mode = "AUTO";
+                        rampGain(nativeGain, 1, XFADE_MS);
+                        rampGain(djGain, 0, XFADE_MS);
                     }
                 } else if (mode === "AUTO_SIM") {
                     const y = yFromTime(
@@ -527,7 +572,7 @@
                         });
                     }
                 } else {
-                    // USER / USER_HYBRID
+                    // USER / USER_HYBRID (same hybrid/manual behavior as before)
                     const pxps = (dy * 1000) / dt;
                     const torque = pxps * DRAG_SENSITIVITY;
                     rateTarget += torque;
@@ -556,9 +601,7 @@
                             now - hybridArmTs >= HYBRID_STICK_MS &&
                             audioReady
                         ) {
-                            // blend to native
                             audio.playbackRate = clamp(platterRate, 0.8, 1.35);
-                            // micro nudge native toward engine
                             const cur = audio.currentTime || 0,
                                 tgt = enginePos,
                                 nudge = clamp(tgt - cur, -0.04, 0.04);
@@ -573,14 +616,12 @@
                         }
                     } else if (mode === "USER_HYBRID") {
                         if (inExit) {
-                            // back to full DJ
                             audio.playbackRate = 1.0;
                             mode = "USER";
                             rampGain(djGain, 1, HYBRID_RAMP_MS);
                             rampGain(nativeGain, 0, HYBRID_RAMP_MS);
                             hybridArmTs = 0;
                         } else {
-                            // stay hybrid: keep small nudge & follow rate
                             audio.playbackRate = clamp(platterRate, 0.8, 1.35);
                             const cur = audio.currentTime || 0,
                                 tgt = enginePos,
@@ -592,13 +633,12 @@
                             );
                         }
                     } else {
-                        // not in enter window → disarm
                         hybridArmTs = 0;
                     }
 
                     setBadge(mode, platterRate);
 
-                    // Calm → return to AUTO
+                    // Calm → return to forward AUTO
                     const calm =
                         now - lastUserTs >= IDLE_BACK_MS &&
                         Math.abs(pxps) < 1.2 &&
