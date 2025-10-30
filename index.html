@@ -92,16 +92,16 @@ const IDLE_HOLD_MS=650, RATE_EPS=0.02;
 /* Blur/visual feel */
 const IS_TOUCH = matchMedia("(pointer: coarse)").matches;
 /* faster decay on mobile, slightly faster overall */
-const BLUR_TARGET_GAIN = IS_TOUCH ? 1.5 : 3.3;
+const BLUR_TARGET_GAIN = IS_TOUCH ? 1.2 : 3.3;
 const BLUR_MAX = 30;
-const BLUR_THRESHOLD = 0.7;
-const BLUR_SMOOTH_UP   = IS_TOUCH ? 0.65 : 1.4;  // how fast blur grows when speeding up
-const BLUR_SMOOTH_DOWN = IS_TOUCH ? 1.45 : 1.2;  // how fast blur clears when slowing/stopping
+const BLUR_THRESHOLD = IS_TOUCH ? 0.9 : 0.7;
+const BLUR_SMOOTH_UP   = IS_TOUCH ? 0.35 : 1.4;  // how fast blur grows when speeding up
+const BLUR_SMOOTH_DOWN = IS_TOUCH ? 1.65 : 1.2;  // how fast blur clears when slowing/stopping
 const SHIFT_GAIN = 5, SHIFT_MAX = 6, SHIFT_SMOOTH = 0.6;
 
 /* Prefetch strategy to avoid background reveal */
 const PRELOAD_INITIAL = IS_TOUCH ? 18 : 12;   // load N frames at start
-const PREFETCH_AHEAD  = IS_TOUCH ? 18 : 12;   // load this many ahead of viewport
+const PREFETCH_AHEAD  = IS_TOUCH ? 28 : 12;   // load this many ahead of viewport
 const PREFETCH_BEHIND = IS_TOUCH ? 8  : 6;    // and behind
 const OBS_ROOT_MARGIN = IS_TOUCH ? "2500px 0px" : "1800px 0px";
 
