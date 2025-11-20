@@ -23,10 +23,13 @@
     filter:url(#motionBlur);
     padding:0 10px; box-sizing:border-box;
   }
-  .frame{ position:relative; width:100%; background:#000; }
+  /* Fit each strip to full screen height */
+  .frame{ position:relative; width:100%; height:100vh; background:#000; }
   .base{
     position:absolute; inset:0; display:block; width:100%; height:100%;
-    object-fit:cover; margin:0; border:0;
+    /* Ensure full vertical fit without cropping */
+    object-fit:contain; object-position:center;
+    margin:0; border:0; background:#000;
   }
   .loading{ position:fixed; inset:0; display:grid; place-items:center; background:#0b1020; z-index:9999; transition:opacity .35s ease; }
   .loading.hide{opacity:0; pointer-events:none}
@@ -64,7 +67,7 @@
 </div>
 
 <div class="wrap">
-  <div id="frame" class="frame" style="aspect-ratio:16/9">
+  <div id="frame" class="frame">
     <img id="viewer" class="base" alt="frame" decoding="async" fetchpriority="high"/>
   </div>
 </div>
@@ -109,12 +112,21 @@ const bases    = new Array(STRIP_COUNT + 1);
 function clamp(v,a,b){ return Math.min(Math.max(v,a),b); }
 function baseSrc(i){ const idx = USE_MOD ? (i % MOD_BASE) : i; return `${STRIP_PREFIX}${idx}.${STRIP_EXT}`; }
 
-/* ================== ONLY 6 UNIQUE IMAGES PRELOAD ================== */
+/* Wrap index for infinite pseudo-scroll */
+const TOTAL = STRIP_COUNT + 1;
+function wrapIndex(i){
+  let n = i % TOTAL;
+  if (n < 0) n += TOTAL;
+  return n;
+}
+
+/* ================== ONLY MOD_BASE UNIQUE IMAGES PRELOAD ================== */
 async function calibrateAspect(){
+  // We no longer rely on aspect-ratio; frame is full viewport height.
+  // Still pre-probe to ensure first paint fast.
   const probe = new Image(); probe.decoding="async"; probe.src = baseSrc(0);
   try{ if (probe.decode) await probe.decode(); }catch{}
-  const w = probe.naturalWidth || 1920, h = probe.naturalHeight || 1080;
-  frameEl.style.aspectRatio = `${w} / ${h}`;
+  // nothing else to do; .frame is 100vh and image uses contain.
 }
 
 async function loadUrlOnce(url, priority){
@@ -129,7 +141,7 @@ async function loadUrlOnce(url, priority){
 }
 
 async function preloadUnique(){
-  // load the 6 (or MOD_BASE) unique URLs only
+  // load the MOD_BASE unique URLs only
   const jobs = [];
   for (let u = 0; u < MOD_BASE; u++){
     const url = `${STRIP_PREFIX}${u}.${STRIP_EXT}`;
@@ -186,8 +198,10 @@ let platterRate=0, rateTarget=0;
 function idxToTime(idx, d){ return d ? (idx/STRIP_COUNT)*d : 0; }
 
 function showIndex(idx){
-  currentIdx = clamp(Math.round(idx), 0, STRIP_COUNT);
-  const img = bases[currentIdx];
+  // wrap for infinite pseudo-scroll
+  const w = wrapIndex(idx);
+  currentIdx = w;
+  const img = bases[w];
   if (img && img.src && viewer.src !== img.src) viewer.src = img.src;
 }
 
@@ -279,11 +293,11 @@ let blurYVis=0, shiftVis=0, hintAutofaded=false;
 async function unlock(){ try{ if(ctx.state!=="running") await ctx.resume(); }catch{} }
 function onUser(){ unlock(); lastUserTs = performance.now(); if(!hintAutofaded){ hintEl.classList.add("hide"); hintAutofaded=true; }}
 
-/* Wheel / trackpad */
+/* Wheel / trackpad (wrap index for infinite pseudo-scroll) */
 addEventListener("wheel",(e)=>{
   e.preventDefault(); onUser();
   const step = Math.sign(e.deltaY) * Math.max(1, Math.round(Math.abs(e.deltaY)*0.05));
-  showIndex(currentIdx + step);
+  showIndex(currentIdx + step); // <-- wraps internally
   const torque = e.deltaY * DRAG_SENSITIVITY;
   rateTarget += torque;
 },{passive:false});
@@ -294,7 +308,7 @@ addEventListener("keydown",(e)=>{
   if (e.key === "ArrowLeft"  || e.key === "ArrowUp"){   onUser(); showIndex(currentIdx-1); rateTarget -= 0.6*DRAG_SENSITIVITY*120; }
 });
 
-/* Touch drag */
+/* Touch drag with infinite wrap */
 let touchY=null;
 addEventListener("touchstart",(e)=>{ onUser(); touchY = e.touches[0].clientY; }, {passive:true});
 addEventListener("touchmove",(e)=>{
@@ -302,7 +316,7 @@ addEventListener("touchmove",(e)=>{
   onUser();
   const y = e.touches[0].clientY, dy = touchY - y; touchY = y;
   const step = Math.sign(dy) * Math.max(1, Math.round(Math.abs(dy)*0.25));
-  showIndex(currentIdx + step);
+  showIndex(currentIdx + step); // <-- wraps internally
   rateTarget += (dy) * DRAG_SENSITIVITY * 0.8;
 },{passive:true});
 addEventListener("touchend",()=>{ touchY=null; }, {passive:true});
