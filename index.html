@@ -27,7 +27,6 @@
   .frame{ position:relative; width:100%; height:100vh; background:#000; }
   .base{
     position:absolute; inset:0; display:block; width:100%; height:100%;
-    /* Ensure full vertical fit without cropping */
     object-fit:contain; object-position:center;
     margin:0; border:0; background:#000;
   }
@@ -100,11 +99,20 @@ const BLUR_SMOOTH_UP   = IS_TOUCH ? 0.35 : 1.4;
 const BLUR_SMOOTH_DOWN = IS_TOUCH ? 0.92 : 1.2;
 const SHIFT_GAIN = 5, SHIFT_MAX = 6, SHIFT_SMOOTH = 0.6;
 
+/* Inertia → auto frame advance while platterRate ≠ 0 */
+const AUTO_INDEX_PER_SEC_DESKTOP = 12;   // images/second at platterRate = 1
+const AUTO_INDEX_PER_SEC_TOUCH   = 16;   // slightly snappier on mobile
+const AUTO_INDEX_PER_SEC = IS_TOUCH ? AUTO_INDEX_PER_SEC_TOUCH : AUTO_INDEX_PER_SEC_DESKTOP;
+
+/* Touch tuning */
+const TOUCH_DRAG_GAIN  = 0.8;    // multiplies dy→rateTarget during drag
+const TOUCH_FLING_GAIN = 1.35;   // multiplies velocity→rateTarget on touchend
+const VELOCITY_WINDOW_MS = 90;   // recent window for fling velocity calc
+
 /* ================== HELPERS ================== */
 const loaderEl = document.getElementById("loader");
 const hintEl   = document.getElementById("hint");
 const viewer   = document.getElementById("viewer");
-const frameEl  = document.getElementById("frame");
 const wrapEl   = document.querySelector(".wrap");
 
 const urlCache = new Map();       // url -> Image (single fetch)
@@ -121,14 +129,6 @@ function wrapIndex(i){
 }
 
 /* ================== ONLY MOD_BASE UNIQUE IMAGES PRELOAD ================== */
-async function calibrateAspect(){
-  // We no longer rely on aspect-ratio; frame is full viewport height.
-  // Still pre-probe to ensure first paint fast.
-  const probe = new Image(); probe.decoding="async"; probe.src = baseSrc(0);
-  try{ if (probe.decode) await probe.decode(); }catch{}
-  // nothing else to do; .frame is 100vh and image uses contain.
-}
-
 async function loadUrlOnce(url, priority){
   if (urlCache.has(url)) return urlCache.get(url);
   const img = new Image();
@@ -139,17 +139,13 @@ async function loadUrlOnce(url, priority){
   try{ if (img.decode) await img.decode(); }catch{}
   return img;
 }
-
 async function preloadUnique(){
-  // load the MOD_BASE unique URLs only
   const jobs = [];
   for (let u = 0; u < MOD_BASE; u++){
     const url = `${STRIP_PREFIX}${u}.${STRIP_EXT}`;
     jobs.push(loadUrlOnce(url, u===0 ? "high" : "low"));
   }
   await Promise.all(jobs);
-
-  // map every index to its cached image instance (no extra network)
   for (let i = 0; i <= STRIP_COUNT; i++){
     bases[i] = urlCache.get(baseSrc(i));
   }
@@ -181,7 +177,6 @@ function makeReversed(b){
   return r;
 }
 async function loadAudio(){
-  // allow normal HTTP caching for speed online
   const ab = await (await fetch(AUDIO_URL, { cache:"force-cache" })).arrayBuffer();
   buffer    = await ctx.decodeAudioData(ab);
   bufferRev = makeReversed(buffer);
@@ -195,10 +190,8 @@ let currentIdx = 0;                 // 0..STRIP_COUNT
 let lastUserTs = 0;
 let platterRate=0, rateTarget=0;
 
-function idxToTime(idx, d){ return d ? (idx/STRIP_COUNT)*d : 0; }
-
+/* Show image by index (wraps) */
 function showIndex(idx){
-  // wrap for infinite pseudo-scroll
   const w = wrapIndex(idx);
   currentIdx = w;
   const img = bases[w];
@@ -208,7 +201,6 @@ function showIndex(idx){
 /* ================== STARTUP ================== */
 async function initLoad(){
   try{
-    await calibrateAspect();
     await Promise.all([loadAudio(), preloadUnique()]);
     mappingReady = true;
 
@@ -223,7 +215,6 @@ async function initLoad(){
     loaderEl.textContent = "Failed to load media.";
   }
 }
-
 addEventListener("load", ()=>{ if ("scrollRestoration" in history) history.scrollRestoration="manual"; initLoad(); }, {once:true});
 
 /* ================== ENGINE ================== */
@@ -265,7 +256,8 @@ function startScheduler(){
       const base=clamp(Math.abs(platterRate),0.45,RATE_CAP);
       const eff =clamp(base*(1+wow+fl),0.38,RATE_CAP);
 
-      const tMap = idxToTime(currentIdx, duration);
+      // follow currentIdx as "position"
+      const tMap = (currentIdx / STRIP_COUNT) * duration;
       enginePos += (tMap - enginePos) * 0.12;
 
       const tail=0.006;
@@ -286,18 +278,18 @@ function startScheduler(){
   }, Math.max(5, HOP_MS/2));
 }
 
-/* ================== INPUT ================== */
+/* ================== INPUT (with mobile inertia) ================== */
 const feBlur = document.querySelector("#motionBlur feGaussianBlur");
 let blurYVis=0, shiftVis=0, hintAutofaded=false;
 
 async function unlock(){ try{ if(ctx.state!=="running") await ctx.resume(); }catch{} }
 function onUser(){ unlock(); lastUserTs = performance.now(); if(!hintAutofaded){ hintEl.classList.add("hide"); hintAutofaded=true; }}
 
-/* Wheel / trackpad (wrap index for infinite pseudo-scroll) */
+/* Wheel / trackpad */
 addEventListener("wheel",(e)=>{
   e.preventDefault(); onUser();
   const step = Math.sign(e.deltaY) * Math.max(1, Math.round(Math.abs(e.deltaY)*0.05));
-  showIndex(currentIdx + step); // <-- wraps internally
+  showIndex(currentIdx + step);
   const torque = e.deltaY * DRAG_SENSITIVITY;
   rateTarget += torque;
 },{passive:false});
@@ -308,27 +300,80 @@ addEventListener("keydown",(e)=>{
   if (e.key === "ArrowLeft"  || e.key === "ArrowUp"){   onUser(); showIndex(currentIdx-1); rateTarget -= 0.6*DRAG_SENSITIVITY*120; }
 });
 
-/* Touch drag with infinite wrap */
+/* Touch with velocity-based fling */
 let touchY=null;
-addEventListener("touchstart",(e)=>{ onUser(); touchY = e.touches[0].clientY; }, {passive:true});
+let velSamples = []; // {t, y}
+
+function pushSample(y){
+  const t = performance.now();
+  velSamples.push({t, y});
+  const cutoff = t - VELOCITY_WINDOW_MS;
+  while (velSamples.length && velSamples[0].t < cutoff) velSamples.shift();
+}
+
+function currentVelocityPxPerSec(){
+  if (velSamples.length < 2) return 0;
+  const a = velSamples[0];
+  const b = velSamples[velSamples.length - 1];
+  const dy = a.y - b.y;               // positive dy means upward swipe (next frames)
+  const dt = (b.t - a.t);             // ms
+  if (dt <= 0) return 0;
+  return (dy * 1000) / dt;            // px/s
+}
+
+addEventListener("touchstart",(e)=>{
+  onUser();
+  touchY = e.touches[0].clientY;
+  velSamples.length = 0;
+  pushSample(touchY);
+},{passive:true});
+
 addEventListener("touchmove",(e)=>{
   if (touchY==null) return;
   onUser();
   const y = e.touches[0].clientY, dy = touchY - y; touchY = y;
-  const step = Math.sign(dy) * Math.max(1, Math.round(Math.abs(dy)*0.25));
-  showIndex(currentIdx + step); // <-- wraps internally
-  rateTarget += (dy) * DRAG_SENSITIVITY * 0.8;
-},{passive:true});
-addEventListener("touchend",()=>{ touchY=null; }, {passive:true});
+  pushSample(y);
 
-/* Turntable + blur loop */
+  const step = Math.sign(dy) * Math.max(1, Math.round(Math.abs(dy)*0.25));
+  showIndex(currentIdx + step);
+
+  rateTarget += (dy) * DRAG_SENSITIVITY * TOUCH_DRAG_GAIN;
+},{passive:true});
+
+addEventListener("touchend",()=>{
+  // fling based on recent velocity
+  const v = currentVelocityPxPerSec(); // px/s
+  rateTarget += v * DRAG_SENSITIVITY * TOUCH_FLING_GAIN;
+  touchY=null; velSamples.length=0;
+},{passive:true});
+
+/* Turntable + blur loop (also auto-advance frames while spinning) */
+let lastT = performance.now();
+let idxAccumulator = 0;
+
 function loop(){
+  const now = performance.now();
+  const dtMs = Math.max(1, now - lastT);
+  const dt = dtMs / 1000;
+  lastT = now;
+
   // friction & return
   rateTarget += (0 - rateTarget) * RETURN_LAMBDA;
   rateTarget += (0 - rateTarget) * FRICTION_DECAY;
 
   platterRate += (rateTarget - platterRate) * 0.25;
   platterRate = clamp(platterRate, -RATE_CAP, RATE_CAP);
+
+  // --- NEW: auto-advance frames based on inertia speed ---
+  const imagesPerSec = AUTO_INDEX_PER_SEC * platterRate; // can be negative
+  idxAccumulator += imagesPerSec * dt;
+  if (Math.abs(idxAccumulator) >= 1){
+    const steps = (idxAccumulator > 0) ? Math.floor(idxAccumulator) : Math.ceil(idxAccumulator);
+    if (steps !== 0){
+      showIndex(currentIdx + steps);
+      idxAccumulator -= steps;
+    }
+  }
 
   // blur vs speed
   const absSpeed = Math.abs(platterRate);
